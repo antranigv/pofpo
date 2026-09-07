@@ -49,6 +49,7 @@ MODULE Oberon;  (** portable, except where noted *) (*JG 22.7.94*)
       keys*: SET;  (** Mouse buttons. *)
       X*, Y*: INTEGER;  (** Mouse position. *)
       ch*: CHAR;  (** Character typed. *)
+      utf*: BOOLEAN;  (** ch is a byte of a UTF-8 sequence. *)
       fnt*: Fonts.Font;  (** Font of typed character. *)
       col*, voff*: SHORTINT  (** Color and vertical offset of typed character. *)
     END;
@@ -509,26 +510,27 @@ END MarkedText;
 (** Main Oberon task dispatcher. Reads the mouse position and characterstyped, informing the viewer of the display space of events using theDisplay.InputMsg. The loop broadcasts a ControlMsg (id = mark) when themarker is set. Pressing the neutralise key results in a ControlMsg (id = neutralize)to be broadcast. All frames receiving the neutralize message should removeselections and the caret. The Loop periodically activates background tasks andthe garbage collector, if no mouse or keyboard events are arriving. *)
    PROCEDURE Loop*;
       VAR V: Viewers.Viewer; M: InputMsg; N: ControlMsg;
-       X, Y: INTEGER; keys, shift, oldshift: SET; ch: CHAR;
+        X, Y: INTEGER; keys, shift, oldshift: SET; ch: CHAR; utf: BOOLEAN;
     BEGIN
       IF CurTask # NIL THEN HandleTaskTrap END;
       Input.Mouse(keys, X, Y); oldshift := {};
       LOOP
         IF Input.Available() > 0 THEN
-          Input.Read(ch);
+          Input.ReadUTF8(ch, utf);
           IF ~ScreenOn THEN ToggleScreen
-          ELSIF ch = Neutralise THEN
+          ELSIF ~utf & (ch = Neutralise) THEN
             N.F := NIL; N.id := neutralize; Display.Broadcast(N);
             FadeCursor(Mouse); FadeCursor(Pointer)
-          ELSIF ch = SETUP THEN
+          ELSIF ~utf & (ch = SETUP) THEN
             N.F := NIL; N.id := mark; N.X := X; N.Y := Y; Display.Broadcast(N)
-          ELSIF ch = 0F5X THEN ToggleScreen
-          ELSIF ch = 0F7X THEN ResetPalette
-          ELSIF ch = 0F8X THEN New := ~New; UpdateDisplay
-          ELSIF ch = 0F9X THEN UpdateDisplay
-          ELSIF ch = 0FFX THEN Reboot
+          ELSIF ~utf & (ch = 0F5X) THEN ToggleScreen
+          ELSIF ~utf & (ch = 0F7X) THEN ResetPalette
+          ELSIF ~utf & (ch = 0F8X) THEN New := ~New; UpdateDisplay
+          ELSIF ~utf & (ch = 0F9X) THEN UpdateDisplay
+          ELSIF ~utf & (ch = 0FFX) THEN Reboot
           ELSE
-            M.F := NIL; M.id := consume; M.ch := ch; M.fnt := CurFnt; M.col := CurCol; M.voff := CurOff;
+            M.F := NIL; M.id := consume; M.ch := ch; M.utf := utf;
+            M.fnt := CurFnt; M.col := CurCol; M.voff := CurOff;
             Display.Broadcast(M);
             DEC(GCTask.time, ActVal)
           END;

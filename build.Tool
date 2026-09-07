@@ -12,6 +12,7 @@ compiler.Compile /s src/common/Objects0.Mod
 compiler.Compile /s src/cli/objects.Mod
 compiler.Compile /s src/cli/strings.Mod
 compiler.Compile /s src/common/regex.Mod
+compiler.Compile /s src/common/Utf8.Mod
 compiler.Compile /s src/common/Texts0.Mod
 compiler.Compile /s src/common/RXA.Mod
 compiler.Compile /s src/cli/texts.Mod
@@ -24,6 +25,7 @@ compiler.Compile /s src/polpo/POLPO.FATFiles.Mod
 compiler.Compile /s src/cli/shell.Mod
 compiler.Compile /s src/cli/loksh.Mod
 compiler.Compile /s src/cli/cat.Mod
+compiler.Compile /s src/cli/bdffont.Mod
 compiler.Compile /s src/cli/grep.Mod
 compiler.Compile /s src/cli/rx.Mod
 
@@ -48,11 +50,11 @@ linker.Link loksh2 /refs /integrate 8049000H x86/Linux0 x86/Kernel x86/Files x86
 compiler.Compile /s src/polpo/POLPO.Objects.Mod
 compiler.Compile src/polpo/POLPO.FileDir.Mod
 compiler.Compile /x src/polpo/POLPO.Display.Mod
-compiler.Compile src/polpo/POLPO.Input.Mod
+compiler.Compile /s src/polpo/POLPO.Input.Mod
 compiler.Compile src/polpo/POLPO.Fonts.Mod
 compiler.Compile src/polpo/POLPO.Texts.Mod
 compiler.Compile src/Viewers.Mod
-compiler.Compile src/Oberon.Mod
+compiler.Compile /s src/Oberon.Mod
 compiler.Compile src/polpo/POLPO.In.Mod
 compiler.Compile src/MenuViewers.Mod
 compiler.Compile src/polpo/POLPO.TextFrames.Mod

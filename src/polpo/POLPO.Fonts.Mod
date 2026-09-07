@@ -14,7 +14,7 @@ of characters, each character being a pattern and and metric data.
 
   IMPORT SYSTEM, Kernel, Files, Objects, Display;
 
-  CONST MaxRuns = 32; IndexSize = 256*4;
+  CONST MaxRuns = 32;
     substitute* = -1; font* = 0; metric* = 1; (** Font types. *)
     TraceMissing = TRUE;  TraceAlias = FALSE;
     
@@ -29,7 +29,8 @@ of characters, each character being a pattern and and metric data.
 
     FontDesc* = RECORD (Objects.LibDesc)
       type*: SHORTINT;  (** Substitute, font, or metric. *)
-      height*, minX*, maxX*, minY*, maxY*: INTEGER  (** Font height, extremal values of characters in font. *)
+      height*, minX*, maxX*, minY*, maxY*: INTEGER;  (** Font height, extremal values of characters in font. *)
+      maxRef*: INTEGER  (** highest valid glyph index + 1; 256 for 8-bit fonts, larger for Unicode fonts *)
     END;
 
     RunRec = RECORD beg, end: INTEGER END;
@@ -94,7 +95,7 @@ of characters, each character being a pattern and and metric data.
 *)
 
     (* portable version *)
-  PROCEDURE GetCharObj (L: Objects.Library; ref: INTEGER; VAR obj: Objects.Object);  
+  PROCEDURE GetCharObj (L: Objects.Library; ref: INTEGER; VAR obj: Objects.Object);
   VAR m: LONGINT; h1: SHORTINT; h2: LONGINT; ch: CHAR;
   BEGIN
     SYSTEM.GET(SYSTEM.VAL(LONGINT, L) + 4, m); (* L.ind *)
@@ -119,10 +120,10 @@ of characters, each character being a pattern and and metric data.
 
   PROCEDURE Internalize (F: Font; VAR R: Files.Rider; type: SHORTINT);
   VAR ch: CHAR;
-      NofRuns, NofBoxes, i, k, l, m: INTEGER;
-      NofBytes, RasterBase, A, a: LONGINT;
+      NofRuns, NofBoxes, i, k, l, m, maxEnd: INTEGER;
+      idxSz, NofBytes, RasterBase, A, a: LONGINT;
       run: ARRAY MaxRuns OF RunRec;
-      box: ARRAY 256 OF BoxRec;
+      box: ARRAY 512 OF BoxRec;
   BEGIN F.type := type;
     Files.Read(R, ch); (*family*)
     Files.Read(R, ch); (*variant*)
@@ -136,6 +137,14 @@ of characters, each character being a pattern and and metric data.
       NofBoxes := NofBoxes + run[k].end - run[k].beg;
       INC(k)
     END;
+    (* index covers 0..maxEnd-1; minimum 256 for backward compatibility *)
+    maxEnd := 256; k := 0;
+    WHILE k # NofRuns DO
+      IF run[k].end > maxEnd THEN maxEnd := run[k].end END;
+      INC(k)
+    END;
+    idxSz := LONG(maxEnd) * 4;
+    F.maxRef := maxEnd;
     l := 0;
     WHILE l # NofBoxes DO
       ReadInt(R, box[l].dx);
@@ -144,13 +153,13 @@ of characters, each character being a pattern and and metric data.
       INC(l)
     END;
     IF type = font THEN
-      NofBytes := IndexSize + 29; l := 0;
+      NofBytes := idxSz + 29; l := 0;
       WHILE l # NofBoxes DO
         NofBytes := NofBytes + 5 + (box[l].w + 7) DIV 8 * box[l].h; INC(l)
       END;
       SYSTEM.NEW(F.ind, NofBytes);
       RasterBase := SYSTEM.VAL(LONGINT, F.ind);
-      A := RasterBase; a := A + IndexSize;
+      A := RasterBase; a := A + idxSz;
       Put1(a, 12); Put1(a, 0); Put1(a, -3); Put1(a, 12); Put1(a, 12); (*null char*)
       Put2(a, 0FFFH);
       Put2(a, 0801H); Put2(a, 0801H); Put2(a, 0801H); Put2(a, 0801H); Put2(a, 0801H);
@@ -158,7 +167,7 @@ of characters, each character being a pattern and and metric data.
       Put2(a, 0FFFH);
       k := 0; l := 0; m := 0;
       WHILE k < NofRuns DO
-        WHILE m < run[k].beg DO Put4(A, RasterBase + IndexSize + 3); INC(m) END;
+        WHILE m < run[k].beg DO Put4(A, RasterBase + idxSz + 3); INC(m) END;
         WHILE m < run[k].end DO Put4(A, a + 3);
           Put1(a, box[l].dx);
           Put1(a, box[l].x); Put1(a, box[l].y);
@@ -169,15 +178,15 @@ of characters, each character being a pattern and and metric data.
         END;
         INC(k)
       END;
-      WHILE m < 256 DO Put4(A, RasterBase + IndexSize + 3); INC(m) END
+      WHILE m < maxEnd DO Put4(A, RasterBase + idxSz + 3); INC(m) END
     ELSE (*type := metric*)
-      SYSTEM.NEW(F.ind, IndexSize + 5 + NofBoxes*5);
+      SYSTEM.NEW(F.ind, idxSz + 5 + NofBoxes*5);
       RasterBase := SYSTEM.VAL(LONGINT, F.ind);
-      A := RasterBase; a := A + IndexSize;
+      A := RasterBase; a := A + idxSz;
       Put1(a, 12); Put1(a, 0); Put1(a, -3); Put1(a, 12); Put1(a, 12); (*null char*)
       k := 0; l := 0; m := 0;
       WHILE k < NofRuns DO
-        WHILE m < run[k].beg DO Put4(A, RasterBase + IndexSize + 3); INC(m) END;
+        WHILE m < run[k].beg DO Put4(A, RasterBase + idxSz + 3); INC(m) END;
         WHILE m < run[k].end DO Put4(A, a + 3);
           Put1(a, box[l].dx);
           Put1(a, box[l].x); Put1(a, box[l].y);
@@ -186,7 +195,7 @@ of characters, each character being a pattern and and metric data.
         END;
         INC(k)
       END;
-      WHILE m < 256 DO Put4(A, RasterBase + IndexSize + 3); INC(m) END
+      WHILE m < maxEnd DO Put4(A, RasterBase + idxSz + 3); INC(m) END
     END
   END Internalize;
 
@@ -195,7 +204,7 @@ of characters, each character being a pattern and and metric data.
     F.height := Default.height;
     F.minX := Default.minX; F.maxX := Default.maxX;
     F.minY := Default.minY; F.maxY := Default.maxY;
-    F.ind := Default.ind;
+    F.ind := Default.ind; F.maxRef := Default.maxRef;
     IF TraceMissing THEN
       Kernel.WriteString("Missing: ");  Kernel.WriteString(F.name);  Kernel.WriteLn
     END

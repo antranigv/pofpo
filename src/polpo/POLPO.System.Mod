@@ -1060,7 +1060,9 @@ BEGIN
   i:=0;
   WHILE i<LEN(Input.clip^) DO
     IF Input.clip[i]=LF THEN Input.clip[i]:=CR END;
-     M.F := NIL; M.id := Oberon.consume; M.ch := Input.clip[i]; M.fnt := Oberon.CurFnt; M.col := Oberon.CurCol; M.voff := Oberon.CurOff;
+      M.F := NIL; M.id := Oberon.consume; M.ch := Input.clip[i];
+      M.utf := ORD(M.ch) >= 080H;
+      M.fnt := Oberon.CurFnt; M.col := Oberon.CurCol; M.voff := Oberon.CurOff;
        Display.Broadcast(M); INC(i);
   END;
 END PasteClip;

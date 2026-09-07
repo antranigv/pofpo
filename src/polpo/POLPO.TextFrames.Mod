@@ -10,7 +10,7 @@ Refer to the license.txt file provided with this distribution. *)
 
 MODULE TextFrames;  (** portable *) (* JG / pjm *)
 
-  IMPORT Input, Modules, Objects, Display, Viewers, Fonts, Texts, Oberon, MenuViewers;
+  IMPORT Input, Modules, Objects, Display, Viewers, Fonts, Texts, Utf8, Oberon, MenuViewers;
 
   CONST CR = 0DX;
     replace = Display.replace; paint = Display.paint; invert = Display.invert;
@@ -66,6 +66,8 @@ MODULE TextFrames;  (** portable *) (* JG / pjm *)
     MarkColor, BarColor, MenuBG, TextBG, FullColor, mode: INTEGER;
     asr, dsr, selH, markW, eolW: INTEGER;
     ch: CHAR;
+    utfBuf: ARRAY 4 OF CHAR; utfLen, utfExp: INTEGER;
+    utfLib: Objects.Library; utfCol, utfVoff: SHORTINT;
     W, KW: Texts.Writer; (*keyboard writer*)
     box: Fonts.Char;
     BoxPat: ARRAY 12 OF SET;
@@ -112,24 +114,48 @@ END MulDiv;
     END
   END UpdateMark;
 
+  PROCEDURE GetCP (VAR R: Texts.Reader; VAR n: INTEGER): LONGINT;
+  VAR R1: Texts.Reader; s: ARRAY 4 OF CHAR; u: Utf8.Char; c, need, i: INTEGER;
+  BEGIN
+    s[0] := ch; c := ORD(ch); need := 1;
+    IF (c >= 0C2H) & (c < 0E0H) THEN need := 2
+    ELSIF (c >= 0E0H) & (c < 0F0H) THEN need := 3
+    ELSIF (c >= 0F0H) & (c <= 0F4H) THEN need := 4
+    ELSIF c >= 080H THEN n := 1; RETURN -1
+    END;
+    R1 := R; i := 1;
+    WHILE (i < need) & ~R1.eot DO Texts.Read(R1, s[i]); INC(i) END;
+    IF (i = need) & Utf8.Ord(s, 0, u, n) THEN
+      R := R1; RETURN u
+    END;
+    n := 1; RETURN -1
+  END GetCP;
+
   PROCEDURE Width (VAR R: Texts.Reader; len: LONGINT): INTEGER;
-    VAR  pos: LONGINT; ox: INTEGER; obj: Objects.Object;
+    VAR pos, cp: LONGINT; ox, n: INTEGER; obj: Objects.Object; lib: Objects.Library;
   BEGIN pos := 0; ox := 0;
-    WHILE pos # len DO
-      R.lib.GetObj(R.lib, ORD(ch), obj);
+    WHILE (pos < len) & (R.lib # NIL) DO
+      lib := R.lib; cp := GetCP(R, n);
+      IF (lib # NIL) & (lib IS Fonts.Font) & (cp >= 0) & (cp < lib(Fonts.Font).maxRef) THEN
+        lib.GetObj(lib, SHORT(cp), obj)
+      ELSE obj := box
+      END;
       IF ~(obj IS Fonts.Char) THEN obj := box END;
-      ox := ox + obj(Fonts.Char).dx; INC(pos); Texts.Read(R, ch)
+      ox := ox + obj(Fonts.Char).dx; INC(pos, n); Texts.Read(R, ch)
     END;
     RETURN ox
   END Width;
 
   PROCEDURE DisplayLine (F: Frame; L: Line;
     VAR R: Texts.Reader; X, Y: INTEGER; len: LONGINT);
-    VAR NX: INTEGER; obj: Objects.Object;
+    VAR NX, n: INTEGER; cp: LONGINT; obj: Objects.Object; lib: Objects.Library;
   BEGIN NX := F.X + F.W;
     WHILE (ch # CR) & (R.lib # NIL) DO
-      IF R.lib IS Fonts.Font THEN R.lib.GetObj(R.lib, ORD(ch), obj)
-        ELSE obj := box
+      lib := R.lib;
+      cp := GetCP(R, n);
+      IF (lib # NIL) & (lib IS Fonts.Font) & (cp >= 0) & (cp < lib(Fonts.Font).maxRef) THEN
+        lib.GetObj(lib, SHORT(cp), obj)
+      ELSE obj := box
       END;
       WITH obj: Fonts.Char DO
         IF X + obj.x + obj.w <= NX THEN
@@ -139,7 +165,7 @@ END MulDiv;
           X := NX
         END;
       END;
-      INC(len); Texts.Read(R, ch)
+      INC(len, n); Texts.Read(R, ch)
     END;
     L.len := len + 1; L.wid := X + eolW - (F.X + F.left);
     L.eot := R.eot; Texts.Read(R, ch)
@@ -308,10 +334,41 @@ END MulDiv;
     loc.org := org; loc.lin := L; loc.y := cury
   END LocateLine;
 
+  PROCEDURE SafeGetObj (VAR R: Texts.Reader; VAR n: INTEGER; VAR obj: Objects.Object);
+  VAR lib: Objects.Library; cp: LONGINT;
+  BEGIN
+    lib := R.lib; cp := GetCP(R, n);
+    IF (lib # NIL) & (lib IS Fonts.Font) & (cp >= 0) & (cp < lib(Fonts.Font).maxRef) THEN
+      lib.GetObj(lib, SHORT(cp), obj)
+    ELSE obj := box
+    END;
+    IF ~(obj IS Fonts.Char) THEN obj := box END
+  END SafeGetObj;
+
+  PROCEDURE NextPos(text: Texts.Text; pos: LONGINT): LONGINT;
+  VAR R: Texts.Reader; n: INTEGER; cp: LONGINT;
+  BEGIN
+    IF pos >= text.len THEN RETURN text.len END;
+    Texts.OpenReader(R, text, pos); Texts.Read(R, ch); cp := GetCP(R, n);
+    INC(pos, n); IF pos > text.len THEN pos := text.len END; RETURN pos
+  END NextPos;
+
+  PROCEDURE PrevPos(text: Texts.Text; pos: LONGINT): LONGINT;
+  VAR R: Texts.Reader; p: LONGINT; n: INTEGER; cp: LONGINT; c: CHAR;
+  BEGIN
+    IF pos <= 0 THEN RETURN 0 END;
+    p := pos - 1; Texts.OpenReader(R, text, p); Texts.Read(R, c);
+    WHILE (p > 0) & (ORD(c) >= 080H) & (ORD(c) < 0C0H) & (pos - p < 4) DO
+      DEC(p); Texts.OpenReader(R, text, p); Texts.Read(R, c)
+    END;
+    Texts.OpenReader(R, text, p); Texts.Read(R, ch); cp := GetCP(R, n);
+    IF (cp >= 0) & (p + n = pos) THEN RETURN p ELSE RETURN pos - 1 END
+  END PrevPos;
+
   PROCEDURE LocateString (F: Frame; x, y: INTEGER; VAR loc: Location);
     VAR R: Texts.Reader;
       bpos, pos, lim: LONGINT;
-      bx, ex, ox: INTEGER;
+      bx, ex, ox, n: INTEGER;
       obj: Objects.Object;
   BEGIN
     LocateLine(F, y, loc);
@@ -321,23 +378,20 @@ END MulDiv;
     Texts.OpenReader(R, F.text, loc.org); Texts.Read(R, ch);
     LOOP
       LOOP (*scan string*)
-        IF (pos = lim) OR (ch <= " ") THEN EXIT END;
-        R.lib.GetObj(R.lib, ORD(ch), obj);
-        IF ~(obj IS Fonts.Char) THEN obj := box END;
-        INC(pos); ox := ox + obj(Fonts.Char).dx; Texts.Read(R, ch)
+        IF (pos >= lim) OR (ch <= " ") THEN EXIT END;
+        SafeGetObj(R, n, obj);
+        INC(pos, n); ox := ox + obj(Fonts.Char).dx; Texts.Read(R, ch)
       END;
       ex := ox;
       LOOP (*scan gap*)
-        IF (pos = lim) OR (ch > " ") THEN EXIT END;
-        R.lib.GetObj(R.lib, ORD(ch), obj);
-        IF ~(obj IS Fonts.Char) THEN obj := box END;
-        INC(pos); ox := ox + obj(Fonts.Char).dx; Texts.Read(R, ch)
+        IF (pos >= lim) OR (ch > " ") THEN EXIT END;
+        SafeGetObj(R, n, obj);
+        INC(pos, n); ox := ox + obj(Fonts.Char).dx; Texts.Read(R, ch)
       END;
-      IF (pos = lim) OR (ox > x) THEN EXIT END;
-      R.lib.GetObj(R.lib, ORD(ch), obj);
-      IF ~(obj IS Fonts.Char) THEN obj := box END;
+      IF (pos >= lim) OR (ox > x) THEN EXIT END;
+      SafeGetObj(R, n, obj);
       bpos := pos; bx := ox;
-      INC(pos); ox := ox + obj(Fonts.Char).dx; Texts.Read(R, ch)
+      INC(pos, n); ox := ox + obj(Fonts.Char).dx; Texts.Read(R, ch)
     END;
     loc.pos := bpos; loc.dx := ex - bx; loc.x := bx
   END LocateString;
@@ -345,7 +399,7 @@ END MulDiv;
   PROCEDURE LocateChar (F: Frame; x, y: INTEGER; VAR loc: Location);
     VAR R: Texts.Reader;
       pos, lim: LONGINT;
-      ox, dx: INTEGER;
+      ox, dx, n: INTEGER;
       obj: Objects.Object;
   BEGIN
     LocateLine(F, y, loc);
@@ -353,12 +407,11 @@ END MulDiv;
     pos := loc.org; ox := F.left;
     Texts.OpenReader(R, F.text, loc.org); Texts.Read(R, ch);
     LOOP
-      IF pos = lim THEN dx := eolW; EXIT END;
-      R.lib.GetObj(R.lib, ORD(ch), obj);
-      IF ~(obj IS Fonts.Char) THEN obj := box END;
+      IF pos >= lim THEN dx := eolW; EXIT END;
+      SafeGetObj(R, n, obj);
       dx := obj(Fonts.Char).dx;
       IF ox + dx > x THEN EXIT END;
-      INC(pos); ox := ox + dx; Texts.Read(R, ch)
+      INC(pos, n); ox := ox + dx; Texts.Read(R, ch)
     END;
     loc.pos := pos; loc.dx := dx; loc.x := ox
   END LocateChar;
@@ -454,7 +507,7 @@ END MulDiv;
 
   PROCEDURE SetSelection* (F: Frame; beg, end: LONGINT);
   BEGIN
-    IF end <= beg THEN end := beg + 1 END;
+    IF end <= beg THEN end := NextPos(F.text, beg) END;
     IF F.sel # 0 THEN FlipSelection(F, F.selbeg, F.selend) END;
     LocatePos(F, beg, F.selbeg);
     IF F.selbeg.pos # beg THEN Show(F, beg); LocatePos(F, beg, F.selbeg) END;
@@ -468,12 +521,13 @@ END MulDiv;
       IF F.trailer.next # F.trailer THEN
       IF F.sel # 0 THEN FlipSelection(F, F.selbeg, F.selend) END;
       LocateChar(F, X - F.X, Y - F.Y, loc);
-      IF (F.sel # 0) & (loc.pos = F.selbeg.pos) & (F.selend.pos = F.selbeg.pos + 1) THEN
+      IF (F.sel # 0) & (loc.pos = F.selbeg.pos)
+          & (F.selend.pos = NextPos(F.text, F.selbeg.pos)) THEN
         LocateChar(F, F.left, Y - F.Y, F.selbeg)
       ELSE F.selbeg := loc
       END;
       F.sel := 0;
-      INC(loc.pos); loc.x := loc.x + loc.dx; F.selend := loc;
+      loc.pos := NextPos(F.text, loc.pos); loc.x := loc.x + loc.dx; F.selend := loc;
       FlipSelection(F, F.selbeg, F.selend);
         keysum := {};
       REPEAT 
@@ -482,7 +536,7 @@ END MulDiv;
         Oberon.DrawCursor(Oberon.Mouse, Oberon.Mouse.marker, X, Y);
         LocateChar(F, X - F.X, Y - F.Y, loc);
         IF loc.pos < F.selbeg.pos THEN loc := F.selbeg END;
-        INC(loc.pos); loc.x := loc.x + loc.dx;
+        loc.pos := NextPos(F.text, loc.pos); loc.x := loc.x + loc.dx;
         IF loc.pos < F.selend.pos THEN FlipSelection(F, loc, F.selend); F.selend := loc
         ELSIF loc.pos > F.selend.pos THEN FlipSelection(F, F.selend, loc); F.selend := loc
         END
@@ -614,25 +668,27 @@ END MulDiv;
   END Call;
 
   PROCEDURE Write* (F: Frame; ch: CHAR; lib: Objects.Library; col, voff: SHORTINT);
+  VAR pos: LONGINT;
   BEGIN (*F.car # 0*)
     IF ch = 7FX THEN
       IF F.carloc.pos > F.org THEN
-        Texts.Delete(F.text, F.carloc.pos - 1, F.carloc.pos);
-        SetCaret(F, F.carloc.pos - 1)
+        pos := PrevPos(F.text, F.carloc.pos);
+        Texts.Delete(F.text, pos, F.carloc.pos);
+        SetCaret(F, pos)
       END
     ELSIF (ch = 0C1X) THEN  (* ^ *)
   ELSIF (ch = 0C2X) THEN  (* v *)
     ELSIF ch = 0C3X THEN (* right *)
       IF F.carloc.pos < F.text.len THEN
-        RemoveCaret(F); SetCaret(F, F.carloc.pos + 1)
+        RemoveCaret(F); SetCaret(F, NextPos(F.text, F.carloc.pos))
       END
     ELSIF ch = 0C4X THEN (* left *)
       IF F.carloc.pos > 0 THEN
-        RemoveCaret(F); SetCaret(F, F.carloc.pos - 1)
+        RemoveCaret(F); SetCaret(F, PrevPos(F.text, F.carloc.pos))
       END
     ELSIF (ch = 0A1X)  THEN  (* del-key *)
       IF F.carloc.pos < F.text.len THEN
-        Texts.Delete(F.text, F.carloc.pos , F.carloc.pos+1);
+        Texts.Delete(F.text, F.carloc.pos, NextPos(F.text, F.carloc.pos));
         SetCaret(F, F.carloc.pos + 0)
       END
     ELSIF (ch >= 0A0X) & (ch <= 0A9X) THEN
@@ -957,8 +1013,36 @@ END MulDiv;
     END
   END Edit;
 
+  (* Insert a complete UTF-8 sequence without interpreting continuation bytes
+     as Oberon control keys. *)
+  PROCEDURE WriteBytes (F: Frame; VAR buf: ARRAY OF CHAR; n: INTEGER;
+                        lib: Objects.Library; col, voff: SHORTINT);
+  VAR i: INTEGER;
+  BEGIN
+    KW.lib := lib; KW.col := col; KW.voff := voff;
+    i := 0; WHILE i < n DO Texts.Write(KW, buf[i]); INC(i) END;
+    Texts.Insert(F.text, F.carloc.pos, KW.buf);
+    SetCaret(F, F.carloc.pos + n)
+  END WriteBytes;
+
+  PROCEDURE FlushUTF(F: Frame);
+  BEGIN
+    IF utfLen > 0 THEN WriteBytes(F, utfBuf, utfLen, utfLib, utfCol, utfVoff) END;
+    utfLen := 0; utfExp := 0
+  END FlushUTF;
+
+  PROCEDURE StartUTF(F: Frame; c: CHAR; lib: Objects.Library; col, voff: SHORTINT);
+  BEGIN
+    utfBuf[0] := c; utfLen := 1; utfLib := lib; utfCol := col; utfVoff := voff;
+    IF (ORD(c) >= 0C2H) & (ORD(c) < 0E0H) THEN utfExp := 1
+    ELSIF (ORD(c) >= 0E0H) & (ORD(c) < 0F0H) THEN utfExp := 2
+    ELSIF (ORD(c) >= 0F0H) & (ORD(c) <= 0F4H) THEN utfExp := 3
+    ELSE FlushUTF(F)
+    END
+  END StartUTF;
+
   PROCEDURE  Handle* (F: Objects.Object; VAR M: Objects.ObjMsg);
-    VAR F1: Frame;
+    VAR F1: Frame; u: Utf8.Char; n: INTEGER;
   BEGIN
     WITH F: Frame DO
     IF M IS Texts.UpdateMsg THEN
@@ -969,7 +1053,29 @@ END MulDiv;
          WITH M: Oberon.InputMsg DO
           IF M.id = Oberon.track THEN Edit(F, M.X, M.Y, M.keys)
           ELSIF M.id = Oberon.consume THEN
-          IF F.car # 0 THEN Write(F, M.ch, M.fnt, M.col, M.voff) END
+            IF F.car # 0 THEN
+              IF M.utf THEN
+                IF utfExp > 0 THEN
+                  IF (ORD(M.ch) >= 080H) & (ORD(M.ch) < 0C0H) THEN
+                  utfBuf[utfLen] := M.ch; INC(utfLen); DEC(utfExp);
+                  IF utfExp = 0 THEN
+                      IF Utf8.Ord(utfBuf, 0, u, n) & (n = utfLen) THEN
+                        WriteBytes(F, utfBuf, utfLen, utfLib, utfCol, utfVoff);
+                        utfLen := 0
+                      ELSE FlushUTF(F)
+                      END
+                    END
+                  ELSE
+                    FlushUTF(F); StartUTF(F, M.ch, M.fnt, M.col, M.voff)
+                  END
+                ELSE
+                  StartUTF(F, M.ch, M.fnt, M.col, M.voff)
+                END
+              ELSE
+                FlushUTF(F);
+                Write(F, M.ch, M.fnt, M.col, M.voff)
+              END
+            END
           END
          END
       ELSIF M IS Oberon.ControlMsg THEN

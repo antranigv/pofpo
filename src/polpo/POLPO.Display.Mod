@@ -1565,7 +1565,8 @@ END GetAdr;
 PROCEDURE X11GetSym*(detail, state: LONGINT): LONGINT;
 VAR sym: LONGINT;
 BEGIN
-  IF detail=0 THEN RETURN 0 END;
+  IF (detail < ORD(r1data.minkeycode)) OR (detail > ORD(r1data.maxkeycode))
+      OR (state < 0) OR (state >= xkspkc) THEN RETURN 0 END;
   RETURN x11Keymap[ (detail-ORD(r1data.minkeycode)), state];
 
 (*

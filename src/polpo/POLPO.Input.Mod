@@ -39,7 +39,7 @@ see www.kernel.org/doc/Documentation/input/imput.txt and /usr/include/linux/inpu
 Module Input is responsible for event timing, mouse and keyboard input.
 *)
 
-IMPORT  Linux0, Kernel, Display, SYSTEM;
+IMPORT  Linux0, Kernel, Display, Utf8, SYSTEM;
 
 CONST
   ME="/dev/input/eventx";
@@ -128,6 +128,7 @@ VAR
   err: LONGINT;
   cb1, cb2: LONGINT;
   buf: ARRAY 32 OF CHAR; (* input char buffer *)
+  utf: ARRAY 32 OF BOOLEAN;
   keywarn: BOOLEAN;
 
   fdset: SET;
@@ -172,6 +173,18 @@ BEGIN
     Kernel.Shutdown(1)
   END
 END RequireSelectable;
+
+PROCEDURE Put(ch: CHAR; isUTF: BOOLEAN);
+BEGIN
+  buf[cb2 MOD 32] := ch; utf[cb2 MOD 32] := isUTF; INC(cb2)
+END Put;
+
+PROCEDURE PutUnicode(u: LONGINT);
+VAR s: ARRAY 4 OF CHAR; n, i: INTEGER;
+BEGIN
+  Utf8.Chr(u, s, n); i := 0;
+  WHILE i < n DO Put(s[i], n > 1); INC(i) END
+END PutUnicode;
 
 PROCEDURE Avail( fd: SET; usec: LONGINT): BOOLEAN;
 TYPE  TimeVal= RECORD tvsec, tvusec: LONGINT END;
@@ -229,10 +242,12 @@ BEGIN
 END ReadChar;
 
 PROCEDURE PollTTY;
-VAR ch, ch2: CHAR;
+VAR ch, ch2: CHAR; isUTF: BOOLEAN;
 BEGIN
 IF Avail( {kbdfd}, 0) THEN  ReadChar( ch);
+  isUTF := ORD(ch) >= 080H;
   IF ( ch= 1BX) & Avail( {kbdfd}, 0) THEN
+    isUTF := FALSE;
     ReadChar( ch);
     IF ( ch= "[") & Avail( {kbdfd}, 0) THEN
       ReadChar( ch);
@@ -265,21 +280,10 @@ IF Avail( {kbdfd}, 0) THEN  ReadChar( ch);
         END;
       END;
     END;
-  ELSIF (ch=0C3X) & Avail( {kbdfd}, 0) THEN
-    ReadChar( ch);
-    IF ch=0A4X THEN ch:=83X;    (* german keyboard: a umlaut *)
-    ELSIF ch=0B6X THEN ch:=84X;
-    ELSIF ch=0BCX THEN ch:=85X;
-    ELSIF ch=084X THEN ch:=80X; (* capital a umlaut *)
-    ELSIF ch=096X THEN ch:=81X; (* capital o umlaut *)
-    ELSIF ch=09CX THEN ch:=82X; (* capital u umlaut *)
-    ELSIF ch=09FX THEN ch:=96X; (* sharp s *)
-    END;
   ELSIF ch=0AX THEN ch:= 0DX;
   END;
   IF ch#0X THEN
-    buf[ cb2 MOD 32]:=ch;
-    INC( cb2);
+    Put(ch, isUTF);
     IF trace THEN WriteSH("->", ORD(ch)) END;
   END;
 END;
@@ -415,7 +419,7 @@ END ReceiveSelection;
 
 PROCEDURE PollX;
 VAR
-  detail, code, state, sym, h, i, res, w, sw: LONGINT;
+  detail, code, state, sym, grp, h, i, res, w, sw: LONGINT;
   event: Event;
   c: CHAR;
 BEGIN
@@ -430,12 +434,14 @@ BEGIN
       detail:= ORD( event.detail);
       IF code=2 THEN    (* KeyPress *)
         state:=event.f MOD 10000H;
-        IF state MOD 8=2 THEN state:=1;
+        grp := state DIV 2000H MOD 4; state := state MOD 2000H;
+        IF ODD(state DIV 80H) THEN state:=2 + state MOD 2;
+        ELSIF state MOD 8=2 THEN state:=1;
         ELSIF state MOD 8 =3 THEN state:=2;
         ELSIF ODD(state DIV 10H) & (detail>=4DH) & (detail<=5BH) THEN state:=1;  (* Num-Lock *)
-        ELSIF ODD(state DIV 80H) THEN state:= 4;
-        ELSIF state>=7 THEN  WriteSH("X11: event.state: ", event.f ); state:= state MOD 8;
+        ELSIF state>=7 THEN state:= state MOD 8;
         END;
+        INC(state, grp*2);
         sym:=Display.X11GetSym(detail, state);
         IF trace THEN
           Kernel.WriteString("detail: "); Kernel.WriteHex(detail, 8); Kernel.WriteString(" symbol: "); Kernel.WriteHex( sym, 8);  WriteSH(" state: ", event.f);
@@ -454,70 +460,47 @@ BEGIN
         ELSIF sym=0FE52H THEN c:=5EX;    (* ^ *)
         ELSIF sym=0FE53H THEN c:= 7EX;    (*  ntilde  *)
         ELSIF sym=0FE03H THEN c:= 0X;    (*  Alt Gr  *)
+        ELSIF (sym >= 0FE08H) & (sym <= 0FE11H) THEN c:= 0X  (* XKB group keys *)
         ELSIF sym >=0FF00H THEN
-          c:=0X;
-          sym:=sym MOD 100H;
-          IF sym=063H THEN c:=0A0X;  (* ins *) END;
-          IF sym=050H THEN c:=0A8X;  (* home *) END;
-          IF sym=055H THEN c:=0A2X;  (* pg-up *) END;
-          IF sym=0FFH THEN c:=0A1X;  (* del-key *) END;
-          IF sym=057H THEN c:=0A9X;  (* end *) END;
-          IF sym=056H THEN c:=0A3X;  (* pg-down *) END;
-
-          IF sym=008H THEN c:=7FX;  (* backspace *) END;
-          IF sym=01BH THEN c:=0A5X;  (* Esc=1BX, Oberon.Neutralise=0A5X *) END;
-          IF sym=009H THEN c:= 09X;  (* Tab *) END;
-
-          IF sym DIV 2=0BEH DIV 2 THEN c:=CHR(0A4H+sym MOD 2);  (* F1, F2 *) END;
-          IF sym DIV 2=0C0H DIV 2 THEN c:=CHR(0A6H+sym MOD 2);  (* F3, F4 *) END;
-          IF (sym>=0C2H) & (sym<=0C9H) THEN                    (* F5 ..F12 ; F7= redraw screen*)
-            c:=CHR(sym-0C2H+0F5H)
+          IF sym >= 01000000H THEN
+            PutUnicode(sym MOD 01000000H);
+            c := 0X  (* already stored to buf, skip single-char path *)
+          ELSE
+            c:=0X;
+            sym:=sym MOD 100H;
+            IF sym=063H THEN c:=0A0X;  (* ins *) END;
+            IF sym=050H THEN c:=0A8X;  (* home *) END;
+            IF sym=055H THEN c:=0A2X;  (* pg-up *) END;
+            IF sym=0FFH THEN c:=0A1X;  (* del-key *) END;
+            IF sym=057H THEN c:=0A9X;  (* end *) END;
+            IF sym=056H THEN c:=0A3X;  (* pg-down *) END;
+            IF sym=008H THEN c:=7FX;  (* backspace *) END;
+            IF sym=01BH THEN c:=0A5X;  (* Esc *) END;
+            IF sym=009H THEN c:= 09X;  (* Tab *) END;
+            IF sym DIV 2=0BEH DIV 2 THEN c:=CHR(0A4H+sym MOD 2) END;  (* F1, F2 *)
+            IF sym DIV 2=0C0H DIV 2 THEN c:=CHR(0A6H+sym MOD 2) END;  (* F3, F4 *)
+            IF (sym>=0C2H) & (sym<=0C9H) THEN c:=CHR(sym-0C2H+0F5H) END;  (* F5..F12 *)
+            IF sym=0AFH THEN c:="/" END;
+            IF sym=0AAH THEN c:="*" END;
+            IF sym=0ADH THEN c:="-" END;
+            IF sym=0ABH THEN c:="+" END;
+            IF sym=0ACH THEN c:="," END;
+            IF sym=09FH THEN c:=0A1X END;  (* del *)
+            IF (sym>=0B0H) & (sym<=0B9H) THEN c:=CHR(sym MOD 16 + ORD("0")) END;  (* keypad 0..9 *)
+            IF sym=08DH THEN c:=0DX END;  (* enter *)
+            IF sym=097H THEN c:=0C1X END;  (* ^ *)
+            IF sym=096H THEN c:=0C4X END;  (* <- *)
+            IF sym=099H THEN c:=0C2X END;  (* v *)
+            IF sym=098H THEN c:=0C3X END;  (* -> *)
           END;
-      (* keypad *)
-          IF sym=0AFH THEN c:="/";  (* / *) END;
-          IF sym=0AAH THEN c:="*";  (* * *) END;
-          IF sym=0ADH THEN c:="-";  (* - *) END;
-          IF sym=0ABH THEN c:="+";  (* + *) END;
-          IF sym=0ACH THEN c:=",";  (* , *) END;
-          IF sym=09FH THEN c:=0A1X;  (* del *) END;
-          IF (sym>=0B0H) & ( sym <=0B9H) THEN  (* 0..9 *)
-            c:= CHR(sym MOD 16 + ORD("0"));
-          END;
-          IF sym=08DH THEN c:=0DX;  (* enter *) END;
-          IF sym=097H THEN c:=0C1X;  (* ^ *) END;
-          IF sym=096H THEN c:=0C4X;  (* <- *) END;
-          IF sym=099H THEN c:=0C2X;  (* v *) END;
-          IF sym=098H THEN c:=0C3X;  (* -> *)END;
 
         ELSE
-          IF c=0DFX THEN c:= 96X END;    (* sharp s *)
-          IF c=0E1X THEN c:= 94X END;    (*  aacute  *)
-          IF c=0E7X THEN c:= 93X END;    (*  ccedilla  *)
-          IF c=0EFX THEN c:= 92X END;    (*  idiaeresis  *)
-          IF c=0EBX THEN c:= 91X END;    (*  ediaeresis  *)
-          IF c=0E9X THEN c:= 90X END;    (*  eacute  *)
-          IF c=0F9X THEN c:= 8FX END;    (*  ugrave  *)
-          IF c=0F2X THEN c:= 8EX END;    (*  ograve  *)
-          IF c=0ECX THEN c:= 8DX END;    (*  igrave  *)
-          IF c=0E8X THEN c:= 8CX END;    (*  egrave  *)
-          IF c=0E0X THEN c:= 8BX END;    (*  agrave  *)
-          IF c=0FBX THEN c:= 8AX END;    (*  ucircumflex  *)
-          IF c=0F4X THEN c:= 89X END;    (*  ocircumflex  *)
-          IF c=0EEX THEN c:= 88X END;    (*  icircimflex  *)
-          IF c=0EAX THEN c:= 87X END;    (*  ecircumflex  *)
-          IF c=0E2X THEN c:= 86X END;    (*  acircumflex  *)
-          IF c= 0FCX THEN c:= 85X END;    (* u umlaut; must be 0xyz if c is unsigned *)
-          IF c= 0F6X THEN c:= 84X END;    (* o umlaut *)
-          IF c= 0E4X THEN c:= 83X END;    (* a umlaut *)
-          IF c= 0DCX THEN c:= 82X END;    (* capital u umlaut *)
-          IF c= 0D6X THEN c:= 81X END;    (* capital o umlaut *)
-          IF c= 0C4X THEN c:= 80X END;    (* capital a umlaut *)
+          IF ORD(c) >= 0A0H THEN PutUnicode(ORD(c)); c := 0X END
         END;
 
         IF sym=0AFEH THEN Paste;  (* ctrl-v *)
         ELSIF c#0X THEN
-          buf[ cb2 MOD 32]:= c;
-          INC( cb2);
+          Put(c, FALSE);
         END;
       ELSIF code= 3 THEN  (* KeyRelease *)
         IF (detail=25H) OR (detail=69H) THEN
@@ -618,6 +601,11 @@ END Mouse;
 
 (** Read a character from the keyboard buffer. Blocks if no character is available. *)
 PROCEDURE Read*( VAR ch: CHAR);
+VAR isUTF: BOOLEAN;
+BEGIN ReadUTF8(ch, isUTF)
+END Read;
+
+PROCEDURE ReadUTF8*(VAR ch: CHAR; VAR isUTF: BOOLEAN);
 BEGIN
   WHILE cb2<= cb1 DO
     Idle(0);
@@ -626,8 +614,9 @@ BEGIN
     END;
   END;
   ch:= buf[ cb1 MOD 32];
+  isUTF := utf[cb1 MOD 32];
   INC( cb1);
-END Read;
+END ReadUTF8;
 
 (** Returns the elapsed number of timer ticks from Oberon startup. *)
 PROCEDURE Time*(): LONGINT;
@@ -680,8 +669,7 @@ BEGIN
     (* ack switch back, mmap framebuffer, restore framebuffer, grab mouse*)
     res:=Linux0.IOCtl0( kbdfd, KDSETMODE, 1);   (* graphics mode =1 *)
     res:=Linux0.IOCtl0( kbdfd, VTRELDISP, VTACKACQ);
-    buf[cb2 MOD 32]:=0F7X;  (* F7, redraw display *)
-    INC( cb2);
+    Put(0F7X, FALSE);  (* F7, redraw display *)
     Display.ResetClip;
     fdset:={kbdfd, mfd};
     onoberon:= TRUE;
