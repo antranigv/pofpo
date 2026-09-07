@@ -100,7 +100,7 @@ of characters, each character being a pattern and and metric data.
   VAR m: LONGINT; h1: SHORTINT; h2: LONGINT; ch: CHAR;
   BEGIN
     SYSTEM.GET(SYSTEM.VAL(LONGINT, L) + 4, m); (* L.ind *)
-    SYSTEM.GET(m + ref * SIZE(LONGINT), h2); (* pat adr*)
+    SYSTEM.GET(m + LONG(ref) * SIZE(LONGINT), h2); (* pat adr*)
     theChar.pat := h2; 
     SYSTEM.GET(h2-3, h1); theChar.dx := h1; 
     SYSTEM.GET(h2-2, h1); theChar.x := h1;
