@@ -14,8 +14,7 @@ of characters, each character being a pattern and and metric data.
 
   IMPORT SYSTEM, Kernel, Files, Objects, Display;
 
-  CONST MaxRuns = 32;
-    substitute* = -1; font* = 0; metric* = 1; (** Font types. *)
+  CONST substitute* = -1; font* = 0; metric* = 1; (** Font types. *)
     TraceMissing = TRUE;  TraceAlias = FALSE;
     
   TYPE 
@@ -34,10 +33,12 @@ of characters, each character being a pattern and and metric data.
     END;
 
     RunRec = RECORD beg, end: INTEGER END;
+    Runs = POINTER TO ARRAY OF RunRec;
 
     BoxRec = RECORD
       dx, x, y, w, h: INTEGER
     END;
+    Boxes = POINTER TO ARRAY OF BoxRec;
 
   VAR FontId*: CHAR;  (** Initial character of font files (.Fnt). *)
       Default*: Font;  (** Default system screen font (typically Oberon10.Scn.Fnt). *)
@@ -122,8 +123,8 @@ of characters, each character being a pattern and and metric data.
   VAR ch: CHAR;
       NofRuns, NofBoxes, i, k, l, m, maxEnd: INTEGER;
       idxSz, NofBytes, RasterBase, A, a: LONGINT;
-      run: ARRAY MaxRuns OF RunRec;
-      box: ARRAY 512 OF BoxRec;
+      run: Runs;
+      box: Boxes;
   BEGIN F.type := type;
     Files.Read(R, ch); (*family*)
     Files.Read(R, ch); (*variant*)
@@ -131,6 +132,7 @@ of characters, each character being a pattern and and metric data.
     ReadInt(R, F.minX); ReadInt(R, F.maxX);
     ReadInt(R, F.minY); ReadInt(R, F.maxY);
     ReadInt(R, NofRuns);
+    NEW(run, NofRuns);
     NofBoxes := 0; k := 0;
     WHILE k # NofRuns DO
       ReadInt(R, run[k].beg); ReadInt(R, run[k].end);
@@ -145,6 +147,7 @@ of characters, each character being a pattern and and metric data.
     END;
     idxSz := LONG(maxEnd) * 4;
     F.maxRef := maxEnd;
+    NEW(box, NofBoxes);
     l := 0;
     WHILE l # NofBoxes DO
       ReadInt(R, box[l].dx);

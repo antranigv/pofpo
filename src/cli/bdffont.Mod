@@ -7,7 +7,6 @@ IMPORT Files, Texts := texts, Oberon := Oberon0, out;
 
 CONST
   MaxLine = 512;
-  MaxRuns = 32;
   MaxCode = 7FFFH;
 
 TYPE
@@ -153,9 +152,6 @@ BEGIN
   WHILE p # NIL DO
     INC(runs); q := p; WHILE (q.next # NIL) & (q.next.code = q.code + 1) DO q := q.next END;
     p := q.next
-  END;
-  IF runs > MaxRuns THEN
-    out.String("bdffont: too many character runs: "); out.Int(runs, 0); out.Ln; RETURN FALSE
   END;
   f := Files.New(name);
   IF f = NIL THEN out.String("bdffont: cannot create "); out.String(name); out.Ln; RETURN FALSE END;
